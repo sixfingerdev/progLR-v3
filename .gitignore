@@ -1,0 +1,24 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Model weights / checkpoints (too large for GitHub)
+*.pt
+*.pkl
+report_out/checkpoints/
+report_out_250k/checkpoints/
+
+# Raw datasets
+condenser/wt103_raw/
+condenser/wikitext-103/
+condenser/wikitext-2/
+
+# Logs
+*.log
+tests/prism_log.txt
+tests/prism_stdout.txt
+
+# OS
+Thumbs.db
+.DS_Store
