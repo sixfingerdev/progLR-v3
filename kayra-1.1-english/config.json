@@ -1,0 +1,28 @@
+{
+  "architectures": [
+    "ProgLRForCausalLM"
+  ],
+  "model_type": "proglr",
+  "auto_map": {
+    "AutoConfig": "modeling_proglr.ProgLRConfig",
+    "AutoModelForCausalLM": "modeling_proglr.ProgLRForCausalLM",
+    "AutoModel": "modeling_proglr.ProgLRModel"
+  },
+  "d": 768,
+  "heads": 12,
+  "n_std": 1,
+  "n_lr": 1,
+  "num_hidden_layers": 2,
+  "r": 16,
+  "a": 64,
+  "max_pos": 1024,
+  "vocab_size": 250000,
+  "pad_token_id": 0,
+  "unk_token_id": 1,
+  "bos_token_id": 2,
+  "eos_token_id": null,
+  "tie_word_embeddings": false,
+  "torch_dtype": "float32",
+  "model_step": 3500,
+  "best_val_ppl": 108.496
+}

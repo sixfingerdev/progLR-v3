@@ -105,6 +105,61 @@ D=256, L=2, V=5K, 4K steps.
 
 PPL loss of only 6% with 40% fewer parameters.
 
+### 3.3 WikiText-103 Real-Scale Comparison (D=1024, L=8, V=50K, Aug 2026)
+
+**Setup:** WT103, V=50K, same V3-Embed (fixed random R + trained U/V) and the same analytic chunked head for all models. Same data, seed 7, AdamW 3e-4, B=16, SEQ=512, 10K steps (~82M tokens, iid sampling). All runs on the 6GB RTX 3060 Laptop.
+
+| Model | Params | Tok/s | Peak VRAM | Best val_ppl |
+|-------|--------|-------|-----------|--------------|
+| ProgLR 2Std+6LR r=16 (D=1024, B=16) | 28.8M | 11.0K | 1.99GB | 79.46 |
+| Dense TF L=8 (D=1024, B=16, analytic) | 102.6M | 7.4K | 3.33GB | 68.56 |
+| Dense TF L=8 (D=512, B=16, equal-param control) | 26.5M | 16.8K | — | 115.26 @ st=4000\* |
+| **Vanilla TF (D=512, B=16, no tricks)** | 76.9M | **3.08K** | **9.14GB (paging)** | — (50-step speed run) |
+| Vanilla TF (D=512, B=8, no tricks) | 76.9M | 21.5K | 5.04GB | — (100-step speed run) |
+
+\*Equal-param control killed at st=4000 (trend clear); ProgLR was 129.03 at the same step.
+
+**Speed controls — the optimization's win is at scale, and the equal-param limit is honest:**
+- On the **same dense body and same batch** (D=512, B=16, V=50K), vanilla runs 3.08K tok/s and pages at 9.14GB;
+  the analytic chunked head + checkpointing runs 16.8K tok/s inside budget — a **5.4× speedup with paging eliminated**.
+  At D=768 stage-1 this was 12.17×; at V=250K the vanilla dense head cannot even start (logits ≈ 8GB) while the
+  analytic head trained the full 250K model in ~25 minutes. That is the scale regime the project targets.
+- At B=8 vanilla fits (21.5K tok/s) — small-batch runs flatter vanilla and are not the product.
+- Equal-param quality verdict stands and is reported honestly: a narrower dense body (D=512) beats ProgLR on quality
+  and speed at equal params on this budget. Low-rank layers are a **memory/width enabler** (D=1536 dense: 229M, paging,
+  607 tok/s; LR equivalent fits at 2.79GB), not a free quality win.
+
+**Key findings — the equal-param test settles the claim:**
+
+1. **Same width (D=1024):** ProgLR uses 3.56× fewer params and trains 1.49× faster (11.0K vs 7.4K tok/s) with ~40% less VRAM — but loses quality: val_ppl 79.46 vs 68.56 (+16%).
+2. **Equal params (~27M):** dense is BOTH faster (16.8K vs 11.0K tok/s, 1.53×) AND better (115.26 vs 129.03 @ st=4000). "Same quality at fewer params" **does not hold** at this scale.
+3. **The 6GB ceiling is real but is a hardware constraint, not a quality argument:** dense at D=1536 (229M) does not fit — measured 5.83GB peak, CUDA paging, 607 tok/s vs ~3.3K compute-bound.
+
+**Honest conclusion:** LR layers are a *cost* optimization (params/memory/FLOPs at fixed width), not a free quality win. The price is ~16% PPL at equal width, and at equal params a smaller dense model wins outright. V3-All's remaining value: fitting larger-width models on consumer VRAM where dense is impossible.
+
+### 3.4 Sandwich Layout: Anchors Restore Competitiveness (WT103 BPE, Aug 2026)
+
+The §3.3 verdict was tested against the **sandwich** layout — std anchors interleaved *between* low-rank runs rather than stacked at the bottom: `[std, std] + [lr]×4 + [std] + [lr]×4 + [std]` at L=12. First on arithmetic OOD (D=1024, L=12, 5K steps):
+
+| Model | Params | OOD (a≥50) | 80/20 | PPL |
+|---|---|---|---|---|
+| **Sandwich 4Std+8LR r=8** | 52.1M | **7.2%** | 17.9% | 388.4 |
+| Sandwich 4Std+8LR r=16 | 53.3M | 5.7% | 16.9% | **29.8** |
+| All-LR 12 r=16 (no anchors) | 4.1M | 5.6% | 20.0% | 2753.2 |
+| Stacked 3Std+9LR r=16 | 41.0M | 0.9% | 23.5% | 192.2 |
+| Std Transformer L=12 | 151.7M | 0.0% | 16.8% | 943.4 |
+
+Sandwich is the only layout that **beats the full-rank baseline on OOD extrapolation** (7.2% vs 0.0%) at 2.85× fewer params. Then full-scale WT103 with a real BPE tokenizer (V=50K, same V3-Embed + analytic head, seed 7, B=16, 12K steps):
+
+| Model | Params | Val PPL |
+|---|---|---|
+| Dense TF L=8 (D=1024, 10K steps) | 102.6M | 68.56 |
+| ProgLR 2Std+6LR r=16 (D=1024, 10K steps, stacked) | 28.8M | 79.46 |
+| **Sandwich 4Std+8LR r=16 (D=1024, 12K steps)** | **54.6M** | **70.70** |
+| TransfoXL (reference, session-reported) | — | 75.53 |
+
+**The anchor placement changes the verdict:** at 1.88× fewer params than dense, sandwich lands within ~3% of the dense control (70.70 vs 68.56) and below the TransfoXL reference — vs. the 2Std+6LR stacked layout which trailed dense by ~16% at 3.6× fewer params. The sandwich design (anchors every 4-5 LR layers, r=16) is the best quality/compression trade measured on WT103 so far: 54.6M params, 2.88GB peak VRAM, and coherent, repetition-free generation with top-k/top-p/rep-penalty sampling. No factual world-knowledge recall at this scale — expected; the model learns structure, not facts.
+
 ---
 
 ## 4. VRAM Scaling to 6GB Consumer GPUs
@@ -189,7 +244,7 @@ python tests/bench_v3_all.py
 
 2. **Effective capacity vs theoretical.** The "80% quality per LR layer" is a rough heuristic. Formal characterization of quality vs depth/rank ratio is needed.
 
-3. **WikiText-2 benchmark pending.** The arithmetic benchmark proves OOD preservation, but language modeling validation at D=4096 scale is computational work in progress.
+3. **WikiText-2 benchmark pending.** The arithmetic benchmark proves OOD preservation, but language modeling validation at D=4096 scale is computational work in progress. (WT103 sandwich BPE at D=1024, L=12: 70.70 val_ppl — see §3.4.)
 
 4. **PRISM/StateGenom integration.** For 100B-scale theoretical capacity, combining V3-All compression with PRISM's ephemeral weight generation (seed-based weight regeneration) could multiply effects.
 

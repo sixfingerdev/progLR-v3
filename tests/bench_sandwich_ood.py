@@ -8,8 +8,8 @@ Designs at L=12 (scaled copy of the 32-layer sandwich plan
 [Std, Std, LR, LR, LR, LR, Std, LR, LR, LR, LR, Std]):
   1. Std Transformer (12 std)
   2. Stacked 3Std+9LR r=16  (classic: std at bottom, LR on top)
-  3. Sandwich 3Std+9LR r=16 (user design)
-  4. Sandwich 3Std+9LR r=8
+  3. Sandwich 4Std+8LR r=16 (user design)
+  4. Sandwich 4Std+8LR r=8
   5. All-LR 12 r=16         (no anchors, control)
 """
 import sys, os, math, time
@@ -77,29 +77,37 @@ def accuracy(model, data):
             total += b.shape[0]
     return correct / total * 100
 
-SANDWICH = ['std', 'std'] + ['lr'] * 4 + ['std'] + ['lr'] * 4 + ['std'] + ['lr'] * 4
+SANDWICH = ['std', 'std'] + ['lr'] * 4 + ['std'] + ['lr'] * 4 + ['std']
 
 configs = [
     ('Std Transformer L=12',
-     BaselineTransformer(VOCAB, 128, 12, 4)),
+     BaselineTransformer(VOCAB, 1024, 12, 16)),
     ('Stacked 3Std+9LR r=16',
-     V3AllTransformer(VOCAB, 128, 12, 4, embed_rank=8, hidden_rank=16, num_std_layers=3)),
-    ('Sandwich 3Std+9LR r=16',
-     V3AllTransformer(VOCAB, 128, 12, 4, embed_rank=8, hidden_rank=16, layer_pattern=SANDWICH)),
-    ('Sandwich 3Std+9LR r=8',
-     V3AllTransformer(VOCAB, 128, 12, 4, embed_rank=8, hidden_rank=8, layer_pattern=SANDWICH)),
+     V3AllTransformer(VOCAB, 1024, 12, 16, embed_rank=8, hidden_rank=16, num_std_layers=3)),
+    ('Sandwich 4Std+8LR r=16',
+     V3AllTransformer(VOCAB, 1024, 12, 16, embed_rank=8, hidden_rank=16, layer_pattern=SANDWICH)),
+    ('Sandwich 4Std+8LR r=8',
+     V3AllTransformer(VOCAB, 1024, 12, 16, embed_rank=8, hidden_rank=8, layer_pattern=SANDWICH)),
     ('All-LR 12 r=16 (no anchors)',
-     V3AllTransformer(VOCAB, 128, 12, 4, embed_rank=8, hidden_rank=16, num_std_layers=0)),
+     V3AllTransformer(VOCAB, 1024, 12, 16, embed_rank=8, hidden_rank=16, num_std_layers=0)),
 ]
 
-D, B, STEPS = 128, 64, 8000
-print(f'\nD={D}, L=12, B={B}, steps={STEPS}', flush=True)
+D, B = 1024, 64
+STEPS = int(os.environ.get('SANDWICH_STEPS', '6000'))
+SEED = int(os.environ.get('SANDWICH_SEED', '0'))
+if SEED:
+    torch.manual_seed(SEED)
+SELECT = [s.strip().lower() for s in os.environ.get('SANDWICH_SELECT', '').split(',') if s.strip()]
+if SELECT:
+    configs = [c for c in configs if any(s in c[0].lower() for s in SELECT)]
+print(f'\nD={D}, L=12, B={B}, steps={STEPS}, seed={SEED or "default"}, configs={len(configs)}', flush=True)
 
 results = {}
 for name, model in configs:
     model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
     t0 = time.time()
+    best_acc = 0.0
     print(f'\n--- {name} ({model.count_params():,} params) ---', flush=True)
     for step in range(STEPS):
         model.train()
@@ -108,9 +116,10 @@ for name, model in configs:
         loss = F.cross_entropy(model(batch[:, :4]).reshape(-1, VOCAB), batch[:, 1:].reshape(-1))
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
-        if step % 2000 == 0 and step > 0:
-            acc = accuracy(model, test_o[:500])
-            print(f'  st={step:5d} | loss={loss.item():.4f} | OOD={acc:.1f}%', flush=True)
+        if step % 1000 == 0 and step > 0:
+            acc = accuracy(model, test_o[:1000])
+            best_acc = max(best_acc, acc)
+            print(f'  st={step:5d} | loss={loss.item():.4f} | OOD={acc:.1f}% | best={best_acc:.1f}%', flush=True)
     dt = time.time() - t0
     acc_o = accuracy(model, test_o)
     acc_r = accuracy(model, test_r)

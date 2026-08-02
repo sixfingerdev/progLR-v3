@@ -1,0 +1,13 @@
+{
+  "auto_map": {
+    "AutoTokenizer": ["tokenizer_proglr.WordLevelProgLRTok", null]
+  },
+  "tokenizer_class": "WordLevelProgLRTok",
+  "do_lower_case": true,
+  "unk_token": "<unk>",
+  "bos_token": "<bos>",
+  "pad_token": "<pad>",
+  "eos_token": null,
+  "model_max_length": 1024,
+  "padding_side": "right"
+}

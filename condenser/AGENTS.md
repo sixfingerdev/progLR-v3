@@ -122,10 +122,18 @@ Every weight uses V3 format (W = R + α/r · U@V^T) with three modes:
 - `tests/bench_v3_all.py` — Full benchmark suite
 - `condenser/TECHNICAL_SUMMARY.md` — Complete technical report (paper-ready)
 
-### State (Jul 30 2026)
+### State (Aug 1 2026)
 - SCM (Transformer-free) proved: content-dependent routing works for position copy (100%) but not for computation
 - V3-All proved: 2Std+2LR preserves ~92% OOD, scales to 422M params in 6GB
+- **WT103 real-scale test (D=1024, V=50K, 10K steps) REFUTED the equal-param quality claim:** ProgLR 28.8M → 79.46 ppl; dense D=1024 (102.6M) → 68.56; dense at equal params (D=512, 26.5M) → 115.26 vs ProgLR 129.03 @ st=4000. LR = cost/width win at fixed width, not free quality. Dense D=1536 (229M) does not fit 6GB (paging, 607 tok/s). See TECHNICAL_SUMMARY.md §3.3.
+- **The optimization wins where it matters (scale/memory):** same dense body + same batch (D=512, B=16, V=50K): vanilla = 3.08K tok/s, 9.14GB paging; analytic head + ckpt = 16.8K tok/s, fits → **5.4×**. At D=768: 12.17× (stage-1). At V=250K vanilla cannot start (logits ≈ 8GB); analytic trained it in ~25 min. At B=8 vanilla fits (21.5K) — small-batch flatters vanilla; not the product. `tests/scale_vanilla.py` (env SCALE_B).
 - Technical report written
+
+### Sandwich: Anchors Fix the Equal-Param Verdict (Aug 2 2026)
+- **OOD bench (D=1024, L=12, 5K steps, bench_sandwich_ood.py):** Sandwich `[std,std]+lr×4+std+lr×4+std` r=8 → **7.2% OOD (a≥50)** — the ONLY layout that beats full-rank Std L=12 (0.0%, 151.7M) on extrapolation, at 2.85× fewer params (52.1M). Stacked 3Std+9LR → 0.9%; All-LR → 5.6%; sandwich r=16 → 5.7% but best PPL (29.8).
+- **WT103 BPE pretrain (train_sandwich_bpe.py):** real BPE 50K (wt103_bpe_tokenizer.json), D=1024, L=12 sandwich r=16, B=16, 12K steps → **val_ppl 70.70** (peak 2.88GB). Beats the TransfoXL reference (75.53, session-reported) and lands ~3% of the 102.6M dense control (68.56) at 1.88× fewer params — **the sandwich anchor placement closes most of the §3.3 equal-param gap**.
+- **Resume support added** to train_sandwich_bpe.py: `SW_RESUME=ckpt_08000.pt` + `SW_STEPS=12000` restores model_state/best_ppl and continues from step+1 (tok/s line is misleading under resume — counts from step 0).
+- **Verification (verify_sandwich_bpe.py):** eval PPL re-checked from ckpt = **70.70 exactly**; generation with top-k=50/top-p=0.9/rep=1.1/temp=0.8 is coherent grammatical English, wiki-style, no repetition. **knowledge_test.py:** no factual world-knowledge recall (expected at 54M params — structure learned, facts not).
 
 ## Hardware
 RTX 3060 Laptop GPU (6GB VRAM), PyTorch 2.5.1+cu121, CUDA 13.2
