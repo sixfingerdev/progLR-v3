@@ -19,8 +19,14 @@ parser.add_argument('ckpt')
 args = parser.parse_args()
 
 ckpt = torch.load(args.ckpt, map_location=dev, weights_only=False)
-model = ProgLR(VS, D, 2, 12, 1, 16, 64).to(dev)
-model.load_state_dict(ckpt['model_state'])
+cfg = ckpt.get('config', {})
+model = ProgLR(VS, D, 2, 12, 1, 16, 64,
+               act=cfg.get('act', 'relu'), rope=cfg.get('rope', False),
+               r_seed=cfg.get('r_seed', ckpt.get('r_seed', 0))).to(dev)
+sd = ckpt['model_state']
+if 'emb.R' not in sd:
+    model.emb.regen_R(device=dev)
+model.load_state_dict(sd, strict=False)
 model.eval()
 
 ppl = eval_ppl(model, te_x, te_y)

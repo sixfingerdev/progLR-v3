@@ -14,24 +14,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+from condenser.v3_embed import V3WeightEmbedding, build_R
+from condenser.rope import build_rope_cache, apply_rope
 
-class V3Embedding(nn.Module):
-    def __init__(self, vocab_size, hidden_dim, rank=8, alpha=64.0):
-        super().__init__()
-        self.rank = rank
-        self.scale = alpha / max(rank, 1)
-        R = torch.randn(vocab_size, hidden_dim) / math.sqrt(hidden_dim)
-        self.register_buffer('R', R)
-        self.U = nn.Parameter(torch.randn(vocab_size, rank) * 0.01)
-        self.V = nn.Parameter(torch.randn(hidden_dim, rank) * 0.01)
 
-    def forward_embed(self, input_ids):
-        return F.embedding(input_ids, self.R) + \
-               (self.scale * F.embedding(input_ids, self.U) @ self.V.T)
+class V3Embedding(V3WeightEmbedding):
+    """Backward-compat alias: same math, unified with condenser.v3_embed."""
+    def __init__(self, vocab_size, hidden_dim, rank=8, alpha=64.0, r_seed=0):
+        super().__init__(vocab_size, hidden_dim, rank=rank, alpha=alpha, r_seed=r_seed)
 
-    def forward_head(self, x):
-        return F.linear(x, self.R) + \
-               (self.scale * (x @ self.V) @ self.U.T)
+
+def _act_fn(name):
+    return F.gelu if name == 'gelu' else F.relu
 
 
 class V3Linear(nn.Module):
@@ -53,7 +47,7 @@ class V3Linear(nn.Module):
 
 
 class StdAttention(nn.Module):
-    def __init__(self, hidden_dim, num_heads):
+    def __init__(self, hidden_dim, num_heads, rope=False, max_pos=512):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
@@ -61,21 +55,26 @@ class StdAttention(nn.Module):
         self.W_K = V3Linear(hidden_dim, hidden_dim, 0, lr_mode='standard')
         self.W_V = V3Linear(hidden_dim, hidden_dim, 0, lr_mode='standard')
         self.W_O = V3Linear(hidden_dim, hidden_dim, 0, lr_mode='standard')
+        self.rope = rope
+        if rope:
+            cos, sin = build_rope_cache(max_pos, self.head_dim)
+            self.register_buffer('rope_cos', cos)
+            self.register_buffer('rope_sin', sin)
 
     def forward(self, x):
         B, T, D = x.shape
         Q = self.W_Q(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         K = self.W_K(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         V = self.W_V(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        attn = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        mask = torch.triu(torch.full((T, T), float('-inf'), device=x.device), diagonal=1)
-        attn = F.softmax(attn + mask, dim=-1)
-        out = (attn @ V).transpose(1, 2).reshape(B, T, D)
+        if self.rope:
+            Q, K = apply_rope(Q, K, self.rope_cos, self.rope_sin)
+        out = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+        out = out.transpose(1, 2).reshape(B, T, D)
         return self.W_O(out)
 
 
 class LRAttention(nn.Module):
-    def __init__(self, hidden_dim, num_heads, rank, alpha):
+    def __init__(self, hidden_dim, num_heads, rank, alpha, rope=False, max_pos=512):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
@@ -83,46 +82,53 @@ class LRAttention(nn.Module):
         self.W_K = V3Linear(hidden_dim, hidden_dim, rank, alpha, 'lowrank')
         self.W_V = V3Linear(hidden_dim, hidden_dim, rank, alpha, 'lowrank')
         self.W_O = V3Linear(hidden_dim, hidden_dim, rank, alpha, 'lowrank')
+        self.rope = rope
+        if rope:
+            cos, sin = build_rope_cache(max_pos, self.head_dim)
+            self.register_buffer('rope_cos', cos)
+            self.register_buffer('rope_sin', sin)
 
     def forward(self, x):
         B, T, D = x.shape
         Q = self.W_Q(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         K = self.W_K(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         V = self.W_V(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        attn = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        mask = torch.triu(torch.full((T, T), float('-inf'), device=x.device), diagonal=1)
-        attn = F.softmax(attn + mask, dim=-1)
-        out = (attn @ V).transpose(1, 2).reshape(B, T, D)
+        if self.rope:
+            Q, K = apply_rope(Q, K, self.rope_cos, self.rope_sin)
+        out = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+        out = out.transpose(1, 2).reshape(B, T, D)
         return self.W_O(out)
 
 
 class StdFFN(nn.Module):
-    def __init__(self, hidden_dim, ff_mult=4):
+    def __init__(self, hidden_dim, ff_mult=4, act='relu'):
         super().__init__()
+        self.act = _act_fn(act)
         ff_dim = hidden_dim * ff_mult
         self.W1 = V3Linear(hidden_dim, ff_dim, 0, lr_mode='standard')
         self.W2 = V3Linear(ff_dim, hidden_dim, 0, lr_mode='standard')
 
     def forward(self, x):
-        return self.W2(F.relu(self.W1(x)))
+        return self.W2(self.act(self.W1(x)))
 
 
 class LRFFN(nn.Module):
-    def __init__(self, hidden_dim, ff_mult, rank, alpha):
+    def __init__(self, hidden_dim, ff_mult, rank, alpha, act='relu'):
         super().__init__()
+        self.act = _act_fn(act)
         ff_dim = hidden_dim * ff_mult
         self.W1 = V3Linear(hidden_dim, ff_dim, rank, alpha, 'lowrank')
         self.W2 = V3Linear(ff_dim, hidden_dim, rank, alpha, 'lowrank')
 
     def forward(self, x):
-        return self.W2(F.relu(self.W1(x)))
+        return self.W2(self.act(self.W1(x)))
 
 
 class StdLayer(nn.Module):
-    def __init__(self, hidden_dim, num_heads):
+    def __init__(self, hidden_dim, num_heads, act='relu', rope=False, max_pos=512):
         super().__init__()
-        self.attn = StdAttention(hidden_dim, num_heads)
-        self.ffn = StdFFN(hidden_dim)
+        self.attn = StdAttention(hidden_dim, num_heads, rope=rope, max_pos=max_pos)
+        self.ffn = StdFFN(hidden_dim, act=act)
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
 
@@ -133,10 +139,10 @@ class StdLayer(nn.Module):
 
 
 class LRLayer(nn.Module):
-    def __init__(self, hidden_dim, num_heads, rank, alpha):
+    def __init__(self, hidden_dim, num_heads, rank, alpha, act='relu', rope=False, max_pos=512):
         super().__init__()
-        self.attn = LRAttention(hidden_dim, num_heads, rank, alpha)
-        self.ffn = LRFFN(hidden_dim, 4, rank, alpha)
+        self.attn = LRAttention(hidden_dim, num_heads, rank, alpha, rope=rope, max_pos=max_pos)
+        self.ffn = LRFFN(hidden_dim, 4, rank, alpha, act=act)
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
 
@@ -149,12 +155,13 @@ class LRLayer(nn.Module):
 class V3AllTransformer(nn.Module):
     def __init__(self, vocab_size, hidden_dim=768, num_layers=12, num_heads=12,
                  embed_rank=8, hidden_rank=32, alpha=64.0,
-                 num_std_layers=2, layer_pattern=None):
+                 num_std_layers=2, layer_pattern=None, act='relu', rope=False,
+                 max_pos=512, r_seed=0):
         super().__init__()
         self.hidden_dim = hidden_dim
 
-        self.v3_embed = V3Embedding(vocab_size, hidden_dim, embed_rank, alpha)
-        self.pos_embed = nn.Parameter(torch.randn(1, 512, hidden_dim) * 0.01)
+        self.v3_embed = V3Embedding(vocab_size, hidden_dim, embed_rank, alpha, r_seed=r_seed)
+        self.pos_embed = nn.Parameter(torch.randn(1, max_pos, hidden_dim) * 0.01)
 
         if layer_pattern is None:
             n_std = min(num_std_layers, num_layers)
@@ -163,9 +170,9 @@ class V3AllTransformer(nn.Module):
         layers = []
         for kind in layer_pattern:
             if kind == 'std':
-                layers.append(StdLayer(hidden_dim, num_heads))
+                layers.append(StdLayer(hidden_dim, num_heads, act=act, rope=rope, max_pos=max_pos))
             else:
-                layers.append(LRLayer(hidden_dim, num_heads, hidden_rank, alpha))
+                layers.append(LRLayer(hidden_dim, num_heads, hidden_rank, alpha, act=act, rope=rope, max_pos=max_pos))
         self.layers = nn.ModuleList(layers)
 
         self.norm = nn.LayerNorm(hidden_dim)
@@ -181,14 +188,18 @@ class V3AllTransformer(nn.Module):
     def count_params(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-    def vram_estimate(self):
+    def vram_estimate(self, batch=16, seq=512):
         trained = self.count_params()
-        model_mb = trained * 2 / 1e6
+        frozen = sum(b.numel() for b in self.buffers())
+        model_mb = (trained * 2 + frozen * 4) / 1e6
         optim_mb = trained * 8 / 1e6
-        act_mb = self.hidden_dim * 512 * 4 * 2 / 1e6
+        # activations scale with batch*seq*layers (rough, flash-attn, no materialized NxN)
+        n_layers = len(self.layers)
+        act_mb = batch * seq * self.hidden_dim * n_layers * 4 * 2 / 1e6
         total_gb = (model_mb + optim_mb + act_mb) / 1000
         return {
             'trained_m': trained / 1e6,
+            'frozen_m': frozen / 1e6,
             'model_mb': model_mb,
             'optim_mb': optim_mb,
             'act_mb': act_mb,

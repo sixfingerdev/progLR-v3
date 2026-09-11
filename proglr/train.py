@@ -28,7 +28,8 @@ def load_data(path):
 
 def make_model(vs, cfg: TrainConfig):
     return ProgLR(vs, cfg.d, cfg.h, cfg.n_std, cfg.n_lr, cfg.r, cfg.a,
-                  max_pos=cfg.max_pos, checkpoint_all=cfg.checkpoint_all)
+                  max_pos=cfg.max_pos, checkpoint_all=cfg.checkpoint_all,
+                  act=cfg.act, rope=cfg.rope, r_seed=cfg.r_seed)
 
 
 def _head_at(schedule, st):
@@ -139,16 +140,27 @@ def train(cfg: TrainConfig, log=_flog, save_best=True):
             ppl = evaluate(); best = min(best, ppl)
             log(f'  >>> EVAL st={st:5d} | val_ppl={ppl:.2f} | best={best:.2f}')
             if save_best:
-                torch.save({'step': st, 'model_state': model.state_dict(), 'best_ppl': best,
-                            'config': cfg.as_dict()},
+                sd = model.state_dict_compact() if cfg.compact_ckpt else model.state_dict()
+                torch.save({'step': st, 'model_state': sd, 'best_ppl': best,
+                            'config': cfg.as_dict(), 'compact': cfg.compact_ckpt,
+                            'r_seed': cfg.r_seed},
                            os.path.join(cfg.out_dir, f'best_{cfg.head}.pt'))
 
     ppl = evaluate() if cfg.eval_at_end else float('nan')
     best = min(best, ppl)
+    test_ppl = float('nan')
+    if cfg.test_eval_at_end and cfg.test_data and os.path.exists(cfg.test_data):
+        with open(cfg.test_data, 'rb') as f:
+            td = pickle.load(f)
+        ts_x = torch.tensor(td.get('te_x', td.get('test_x')), dtype=torch.int32)
+        ts_y = torch.tensor(td.get('te_y', td.get('test_y')), dtype=torch.int32)
+        test_ppl = eval_ppl(model, ts_x, ts_y, chunk=cfg.chunk)
+        log(f'  TEST | test_ppl={test_ppl:.2f} (held-out, not tuned on)')
     dur = time.time() - t0
-    vram = torch.cuda.max_memory_allocated() / 1e9
+    vram = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
     res = {'name': name, 'ppl': ppl, 'best': best, 'params': pc, 'sec': dur,
-           'vram': vram, 'tok_per_sec': cfg.steps * cfg.batch * cfg.seq / dur}
+           'vram': vram, 'tok_per_sec': cfg.steps * cfg.batch * cfg.seq / dur,
+           'test_ppl': test_ppl}
     log(f'  DONE {name}: final_ppl={ppl:.2f} best={best:.2f} | {dur:.0f}s | peak {vram:.2f}GB')
     return res
 

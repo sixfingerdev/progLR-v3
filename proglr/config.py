@@ -19,6 +19,9 @@ class TrainConfig:
     a: int = 64
     seq: int = 512
     max_pos: int = 1024
+    act: str = 'relu'                 # 'relu' (ckpt-compat) | 'gelu' (new runs)
+    rope: bool = False                # rotary embeddings (new runs)
+    r_seed: int = 0                   # frozen-R seed; ckpt stores seed, not the buffer
 
     # --- training ---
     batch: int = 16
@@ -43,6 +46,9 @@ class TrainConfig:
     eval_every: int = 2000              # periodic val_ppl eval (0 = disabled)
     save_best: bool = True              # save checkpoint at each eval
     eval_at_end: bool = True
+    compact_ckpt: bool = True           # exclude frozen R from ckpt (regen from r_seed)
+    test_data: str = ''                 # optional held-out pkl for final test_ppl
+    test_eval_at_end: bool = False
 
     def resolve(self, base_dir: str):
         """Fill defaults that depend on the repo layout."""

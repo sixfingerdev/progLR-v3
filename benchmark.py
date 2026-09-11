@@ -7,7 +7,7 @@ import time
 import math
 
 from condenser.layer import CondenserModel
-from baseline_transformer import BaselineTransformer
+from condenser.baseline_transformer import BaselineTransformer
 
 def count_trainable_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)

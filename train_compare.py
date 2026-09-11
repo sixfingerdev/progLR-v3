@@ -7,7 +7,7 @@ import time
 import math
 
 from condenser.layer import CondenserModel
-from baseline_transformer import BaselineTransformer
+from condenser.baseline_transformer import BaselineTransformer
 
 
 def generate_text_data(num_tokens=50000, vocab_size=500, seed=42):
