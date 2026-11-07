@@ -72,8 +72,8 @@ Norm:        LayerNorm
 
 | Config | Params | VRAM | Fits? |
 |---|---|---|---|
-| D=4096, L=24, 2Std+22LR r=8 | 422M | 4.2GB | ✅ |
-| Standard D=4096, L=24 | 1.6B | 16.3GB | ❌ |
+| D=4096, L=24, 2Std+22LR r=8 | 422M | 4.2GB | Yes (projected) |
+| Standard D=4096, L=24 | 1.6B | 16.3GB | No (projected) |
 
 ### v2 training acceleration
 
@@ -82,7 +82,7 @@ Analytic chunked head (no 1.6GB logits tensor ever materialized): **12.17× fast
 ## Repository Structure
 
 ```
-law/
+progLR-v3/
 ├── FINAL_REPORT.md / .pdf   # Full report: WT103 pipeline, v2 acceleration, 250K finetune, chat
 ├── benchmark.py             # Condenser vs BaselineTransformer benchmark
 ├── train_compare.py         # Training comparison scripts
@@ -144,3 +144,10 @@ law/
 - Freeze design for finetune: only new-vocab U rows train; old-word CE is preserved bitwise.
 - Raw WT103 language model — completes text, not instruction-tuned; early stages use word-level tokenizer, the sandwich stage uses real BPE (50K merges).
 - Sandwich 4Std+8LR (D=1024, L=12, 54.6M) is the best measured WT103 config: val_ppl 70.70, beats the TransfoXL reference (75.53) and nearly matches a 102.6M dense control at 1.88× fewer params; no world-knowledge recall at this scale (structure, not facts).
+
+
+## Data Provenance and Licensing
+
+The WikiText-103 / WikiText-2 material and derived tokenized text included under `condenser/` and `tests/` originate from the [Salesforce WikiText dataset](https://huggingface.co/datasets/Salesforce/wikitext), derived from Wikipedia articles. The dataset is distributed under [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/). These bundled text/token files may be shortened or tokenized versions of the originals; the original dataset authors and license retain their attribution and licensing requirements. See [Pointer Sentinel Mixture Models](https://arxiv.org/abs/1609.07843) for the dataset citation.
+
+This repository contains research code and self-reported experiments; the measurements are not independent reproductions. The dataset license is not automatically a license grant for unrelated research code.
